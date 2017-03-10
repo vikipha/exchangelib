@@ -532,7 +532,7 @@ class PhoneNumber(IndexedField):
 
     @classmethod
     def from_xml(cls, elem):
-        if elem is None:
+        if elem is None or elem.text is None:
             return None
         assert elem.tag == cls.response_tag(), (cls, elem.tag, cls.response_tag())
         res = cls(
