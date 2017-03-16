@@ -940,7 +940,8 @@ class Field(object):
     Holds information related to an item field
     """
     def __init__(self, name, value_cls, from_version=None, choices=None, default=None, is_list=False,
-                 is_complex=False, is_required=False, is_read_only=False, is_read_only_after_send=False):
+                 is_complex=False, is_required=False, is_read_only=False, is_read_only_after_send=False,
+                 skip_delete_in_update=False):
         self.name = name
         self.value_cls = value_cls
         self.from_version = from_version
@@ -955,6 +956,13 @@ class Field(object):
         self.is_complex = is_complex
         self.is_required = is_required
         self.is_read_only = is_read_only
+
+        # Some of the fields cannot be deleted during update
+        if is_read_only:
+            self.skip_delete_in_update = True
+        else:
+            self.skip_delete_in_update = skip_delete_in_update
+
         # Set this for fields that raise ErrorInvalidPropertyUpdateSentMessage on update after send
         self.is_read_only_after_send = is_read_only_after_send
 
@@ -1250,7 +1258,10 @@ class Item(EWSElement):
                     is_read_only=True),
         SimpleField('datetime_sent', field_uri='item:DateTimeSent', value_cls=EWSDateTime, is_read_only=True),
         SimpleField('datetime_created', field_uri='item:DateTimeCreated', value_cls=EWSDateTime, is_read_only=True),
+        # Remider related
+        SimpleField('reminder_due_by', field_uri='item:ReminderDueBy', value_cls=EWSDateTime, is_required=False, skip_delete_in_update=True),
         SimpleField('reminder_is_set', field_uri='item:ReminderIsSet', value_cls=bool, is_required=True, default=False),
+        SimpleField('reminder_minutes_before_start', field_uri='item:ReminderMinutesBeforeStart', value_cls=int, is_required=True, default=0),
         # ExtendedProperty fields go here
         SimpleField('last_modified_name', field_uri='item:LastModifiedName', value_cls=string_type, is_read_only=True),
         SimpleField('last_modified_time', field_uri='item:LastModifiedTime', value_cls=EWSDateTime, is_read_only=True),
@@ -1696,7 +1707,8 @@ class Task(Item):
         SimpleField('is_team_task', field_uri='task:IsTeamTask', value_cls=bool, is_read_only=True),
         SimpleField('mileage', field_uri='task:Mileage', value_cls=string_type),
         SimpleField('owner', field_uri='task:Owner', value_cls=string_type, is_read_only=True),
-        SimpleField('percent_complete', field_uri='task:PercentComplete', value_cls=Decimal),
+        SimpleField('percent_complete', field_uri='task:PercentComplete', value_cls=Decimal, is_required=True,
+                    default=Decimal(0)),
         SimpleField('start_date', field_uri='task:StartDate', value_cls=EWSDateTime),
         SimpleField('status', field_uri='task:Status', value_cls=Choice, choices={
             NOT_STARTED, 'InProgress', COMPLETED, 'WaitingOnOthers', 'Deferred'

@@ -290,7 +290,7 @@ class Account(object):
         Deletes items.
         'ids' is an iterable of either (item_id, changekey) tuples or Item objects.
         'send_meeting_cancellations' is only applicable to CalendarItem items.
-        'affected_task_occurrences' is only applicable for recurring Task items.
+        'affected_task_occurrences' either SPECIFIED_OCCURRENCE_ONLY or ALL_OCCURRENCES
         'suppress_read_receipts' is only supported from Exchange 2013.
         """
         assert delete_type in DELETE_TYPE_CHOICES

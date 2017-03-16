@@ -28,7 +28,7 @@ from .errors import EWSWarning, TransportError, SOAPError, ErrorTimeoutExpired, 
     ErrorTooManyObjectsOpened, ErrorInvalidLicense, ErrorInvalidSchemaVersionForMailboxVersion, \
     ErrorInvalidServerVersion, ErrorItemNotFound, ErrorADUnavailable, ResponseMessageError, ErrorInvalidChangeKey, \
     ErrorItemSave, ErrorInvalidIdMalformed
-from .ewsdatetime import EWSDateTime
+from .ewsdatetime import EWSDateTime, UTC
 from .transport import wrap, SOAPNS, TNS, MNS, ENS
 from .util import chunkify, create_element, add_xml_child, get_xml_attr, to_xml, post_ratelimited, ElementType, \
     xml_to_str, set_xml_value
@@ -544,7 +544,7 @@ class UpdateItem(EWSAccountService, EWSPooledMixIn):
         set_xml_value(folderitem, field_elem, self.account.version)
         setitemfield.append(folderitem)
         parent_elem.append(setitemfield)
-        if isinstance(value, EWSDateTime):
+        if isinstance(value, EWSDateTime) and value.tzinfo != UTC:  # UTC values does not need to supply explicit TZ
             # Always set timezone explicitly when updating date fields. Exchange 2007 wants "MeetingTimeZone"
             # instead of explicit timezone on each datetime field.
             setitemfield_tz = create_element('t:SetItemField')
@@ -625,7 +625,10 @@ class UpdateItem(EWSAccountService, EWSPooledMixIn):
                     # A value of None or [] means we want to remove this field from the item
                     if field.is_required:
                         log.warning('%s is a required field and may not be deleted. Skipping', field.name)
-                        return
+                        continue
+                    if field.skip_delete_in_update:
+                        log.warning('%s may not be deleted. Skipping', field.name)
+                        continue
                     field_uri_xml = field.field_uri_xml()
                     if isinstance(field_uri_xml, list):
                         fielduri_elems = field_uri_xml
