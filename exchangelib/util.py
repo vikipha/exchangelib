@@ -37,6 +37,16 @@ _illegal_xml_chars_RE = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1F\uD800-\uDFFF\uFF
 BOM = '\xef\xbb\xbf'
 
 
+class NoValueSet:
+    # Represents something less than None :-)
+
+    def __bool__(self):
+        return False
+
+
+NO_VALUE = NoValueSet()  # No value constant, field has value of NO_VALUE if it has not been touched since construction.
+
+
 def chunkify(iterable, chunksize):
     """
     Splits an iterable into chunks of size ``chunksize``. The last chunk may be smaller than ``chunksize``.

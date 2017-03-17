@@ -31,7 +31,7 @@ from .errors import EWSWarning, TransportError, SOAPError, ErrorTimeoutExpired, 
 from .ewsdatetime import EWSDateTime, UTC
 from .transport import wrap, SOAPNS, TNS, MNS, ENS
 from .util import chunkify, create_element, add_xml_child, get_xml_attr, to_xml, post_ratelimited, ElementType, \
-    xml_to_str, set_xml_value
+    xml_to_str, set_xml_value, NO_VALUE
 from .version import EXCHANGE_2010, EXCHANGE_2013
 
 log = logging.getLogger(__name__)
@@ -620,6 +620,10 @@ class UpdateItem(EWSAccountService, EWSPooledMixIn):
                     log.warning('%s is a read-only field. Skipping', field.name)
                     continue
                 value = getattr(item, field.name)
+
+                if value == NO_VALUE:
+                    log.warning('%s is untouched field. Skipping', field.name)
+                    continue
 
                 if value is None or (field.is_list and not value):
                     # A value of None or [] means we want to remove this field from the item

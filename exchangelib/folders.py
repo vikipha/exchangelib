@@ -22,7 +22,7 @@ from .restriction import Restriction, Q
 from .services import TNS, IdOnly, SHALLOW, DEEP, FindFolder, GetFolder, FindItem, GetAttachment, CreateAttachment, \
     DeleteAttachment, MNS, ITEM_TRAVERSAL_CHOICES, FOLDER_TRAVERSAL_CHOICES, SHAPE_CHOICES
 from .util import create_element, add_xml_child, get_xml_attrs, get_xml_attr, set_xml_value, value_to_xml_text, \
-    xml_text_to_value
+    xml_text_to_value, NO_VALUE, NoValueSet
 from .version import EXCHANGE_2010
 
 string_type = string_types[0]
@@ -787,9 +787,9 @@ class ExtendedProperty(EWSElement):
         python_type = self.python_type()
         if self.is_array_type():
             for v in self.value:
-                assert isinstance(v, python_type)
+                assert isinstance(v, (python_type, NoValueSet))
         else:
-            assert isinstance(self.value, python_type)
+            assert isinstance(self.value, (python_type, NoValueSet))
 
     @classmethod
     def is_array_type(cls):
@@ -822,6 +822,7 @@ class ExtendedProperty(EWSElement):
             'Short': int,
             # 'SystemTime': int,
             'String': string_type,
+            'NoValueSet': NoValueSet,
         }[base_type]
 
     def to_xml(self, version):
@@ -967,12 +968,22 @@ class Field(object):
         self.is_read_only_after_send = is_read_only_after_send
 
     def clean(self, value):
-        if value is None:
+
+        # Required fields
+        if value in (None, NO_VALUE):  # Set to none or not set
             if self.is_required and self.default is None:
                 raise ValueError("'%s' is a required field with no default" % self.name)
+            elif self.is_required:
+                value = self.default
+
+        if value is NO_VALUE:  # Not touched ever
+            return NO_VALUE
+
+        if value is None:
             if self.is_list and self.value_cls == Attachment:
                 return []
-            return self.default
+            return None
+
         if self.value_cls == EWSDateTime and not getattr(value, 'tzinfo'):
             raise ValueError("Field '%s' must be timezone aware" % self.name)
         if self.value_cls == Choice and value not in self.choices:
@@ -1280,19 +1291,20 @@ class Item(EWSElement):
             assert isinstance(self.folder, Folder)
 
         for f in self.ITEM_FIELDS:
-            setattr(self, f.name, kwargs.pop(f.name, None))
+            setattr(self, f.name, kwargs.pop(f.name, NO_VALUE))
         if kwargs:
             raise TypeError("%s are invalid keyword arguments for this function" %
                             ', '.join("'%s'" % k for k in kwargs.keys()))
         # self.clean()
-        if self.attachments is None:
-            self.attachments = []
-        for a in self.attachments:
-            if a.parent_item:
-                assert a.parent_item is self  # An attachment cannot refer to 'self' in __init__
-            else:
-                a.parent_item = self
-            self.attach(self.attachments)
+        if self.attachments is not NO_VALUE:
+            if self.attachments is None:
+                self.attachments = []
+            for a in self.attachments:
+                if a.parent_item:
+                    assert a.parent_item is self  # An attachment cannot refer to 'self' in __init__
+                else:
+                    a.parent_item = self
+                self.attach(self.attachments)
 
     def clean(self):
         for f in self.ITEM_FIELDS:
@@ -1311,7 +1323,7 @@ class Item(EWSElement):
         else:
             # _save() returns Item
             self.item_id, self.changekey = item.item_id, item.changekey
-            for old_att, new_att in zip(self.attachments, item.attachments):
+            for old_att, new_att in zip(self.attachments if self.attachments else [], item.attachments):
                 assert old_att.attachment_id is None
                 assert new_att.attachment_id is not None
                 old_att.attachment_id = new_att.attachment_id
@@ -1441,6 +1453,10 @@ class Item(EWSElement):
 
         Adding attachments to an existing item will update the changekey of the item.
         """
+        # OK, now we need a proper list
+        if self.attachments is NO_VALUE:
+            self.attachments = []
+
         if isinstance(attachments, Attachment):
             attachments = [attachments]
         for a in attachments:
@@ -1460,6 +1476,11 @@ class Item(EWSElement):
 
         Removing attachments from an existing item will update the changekey of the item.
         """
+
+        # OK, now we need a proper list
+        if self.attachments is NO_VALUE:
+            self.attachments = []
+
         if isinstance(attachments, Attachment):
             attachments = [attachments]
         for a in attachments:
@@ -1500,7 +1521,7 @@ class Item(EWSElement):
             if f.is_read_only:
                 continue
             value = getattr(self, f.name)
-            if value is None:
+            if value in (None, NO_VALUE):
                 continue
             if f.is_list and not value:
                 continue
