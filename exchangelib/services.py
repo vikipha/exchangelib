@@ -136,7 +136,7 @@ class EWSService(object):
                 protocol=self.protocol,
                 session=session,
                 url=self.protocol.service_endpoint,
-                headers=None,
+                headers=account.append_headers if account else None,
                 data=soap_payload,
                 timeout=self.protocol.TIMEOUT,
                 verify=self.protocol.verify_ssl,

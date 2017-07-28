@@ -37,6 +37,10 @@ class Account(object):
         if '@' not in primary_smtp_address:
             raise ValueError("primary_smtp_address '%s' is not an email address" % primary_smtp_address)
         self.primary_smtp_address = primary_smtp_address
+        if self.primary_smtp_address:
+            self.append_headers = {'X-AnchorMailbox': primary_smtp_address}
+        else:
+            self.append_headers = None
         self.fullname = fullname
         self.locale = locale or getlocale()[0] or None  # get_locale() might not be able to determine the locale
         if self.locale is not None:
