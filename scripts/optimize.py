@@ -8,7 +8,8 @@ import time
 
 from yaml import load
 
-from exchangelib import DELEGATE, services, ServiceAccount, Configuration, Account, EWSDateTime, EWSTimeZone, CalendarItem
+from exchangelib import DELEGATE, services, ServiceAccount, Configuration, Account, EWSDateTime, EWSTimeZone, \
+    CalendarItem
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -22,15 +23,22 @@ except FileNotFoundError:
 categories = ['perftest']
 tz = EWSTimeZone.timezone('America/New_York')
 
-config = Configuration(server=settings['server'],
-                       credentials=ServiceAccount(settings['username'], settings['password']),
-                       verify_ssl=settings['verify_ssl'])
+verify_ssl = settings.get('verify_ssl', True)
+if not verify_ssl:
+    from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
+    BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
+
+config = Configuration(
+    server=settings['server'],
+    credentials=ServiceAccount(settings['username'], settings['password'])
+)
 print('Exchange server: %s' % config.protocol.server)
 
 account = Account(config=config, primary_smtp_address=settings['account'], access_type=DELEGATE)
 
 # Remove leftovers from earlier tests
 account.calendar.filter(categories__contains=categories).delete()
+
 
 # Calendar item generator
 def generate_items(n):
@@ -44,9 +52,9 @@ def generate_items(n):
         location="It's safe to delete this",
         categories=categories,
     )
-    for i in range(n):
+    for j in range(n):
         item = copy.copy(tpl_item)
-        item.subject='Performance optimization test %s by exchangelib' % i,
+        item.subject = 'Performance optimization test %s by exchangelib' % j,
         yield item
 
 

@@ -15,13 +15,12 @@ def generate_map():
     for e in fromstring(r.content).find('windowsZones').find('mapTimezones').findall('mapZone'):
         for location in e.get('type').split(' '):
             tz_map[location] = e.get('other')
-    # Add some missing but helpful translations
-    tz_map['UTC'] = str('UTC')
-    tz_map['GMT'] = str('GMT Standard Time')
     return tz_map
 
 
-PYTZ_TO_MS_TIMEZONE_MAP = {
+# This map is generated irregularly from generate_map(). Do not edit manually - make corrections to
+# PYTZ_TO_MS_TIMEZONE_MAP instead. We provide this map to avoid hammering the CLDR_WINZONE_URL.
+CLDR_TO_MS_TIMEZONE_MAP = {
     'Africa/Abidjan': 'Greenwich Standard Time',
     'Africa/Accra': 'Greenwich Standard Time',
     'Africa/Addis_Ababa': 'E. Africa Standard Time',
@@ -191,7 +190,7 @@ PYTZ_TO_MS_TIMEZONE_MAP = {
     'America/Port_of_Spain': 'SA Western Standard Time',
     'America/Porto_Velho': 'SA Western Standard Time',
     'America/Puerto_Rico': 'SA Western Standard Time',
-    'America/Punta_Arenas': 'SA Eastern Standard Time',
+    'America/Punta_Arenas': 'Magallanes Standard Time',
     'America/Rainy_River': 'Central Standard Time',
     'America/Rankin_Inlet': 'Central Standard Time',
     'America/Recife': 'SA Eastern Standard Time',
@@ -229,7 +228,7 @@ PYTZ_TO_MS_TIMEZONE_MAP = {
     'Antarctica/Macquarie': 'Central Pacific Standard Time',
     'Antarctica/Mawson': 'West Asia Standard Time',
     'Antarctica/McMurdo': 'New Zealand Standard Time',
-    'Antarctica/Palmer': 'SA Eastern Standard Time',
+    'Antarctica/Palmer': 'Magallanes Standard Time',
     'Antarctica/Rothera': 'SA Eastern Standard Time',
     'Antarctica/Syowa': 'E. Africa Standard Time',
     'Antarctica/Vostok': 'Central Asia Standard Time',
@@ -357,7 +356,7 @@ PYTZ_TO_MS_TIMEZONE_MAP = {
     'Etc/GMT-10': 'West Pacific Standard Time',
     'Etc/GMT-11': 'Central Pacific Standard Time',
     'Etc/GMT-12': 'UTC+12',
-    'Etc/GMT-13': 'Tonga Standard Time',
+    'Etc/GMT-13': 'UTC+13',
     'Etc/GMT-14': 'Line Islands Standard Time',
     'Etc/GMT-2': 'South Africa Standard Time',
     'Etc/GMT-3': 'E. Africa Standard Time',
@@ -410,7 +409,7 @@ PYTZ_TO_MS_TIMEZONE_MAP = {
     'Europe/Samara': 'Russia Time Zone 3',
     'Europe/San_Marino': 'W. Europe Standard Time',
     'Europe/Sarajevo': 'Central European Standard Time',
-    'Europe/Saratov': 'Astrakhan Standard Time',
+    'Europe/Saratov': 'Saratov Standard Time',
     'Europe/Simferopol': 'Russian Standard Time',
     'Europe/Skopje': 'Central European Standard Time',
     'Europe/Sofia': 'FLE Standard Time',
@@ -428,7 +427,6 @@ PYTZ_TO_MS_TIMEZONE_MAP = {
     'Europe/Zagreb': 'Central European Standard Time',
     'Europe/Zaporozhye': 'FLE Standard Time',
     'Europe/Zurich': 'W. Europe Standard Time',
-    'GMT': 'GMT Standard Time',
     'Indian/Antananarivo': 'E. Africa Standard Time',
     'Indian/Chagos': 'Central Asia Standard Time',
     'Indian/Christmas': 'SE Asia Standard Time',
@@ -448,8 +446,8 @@ PYTZ_TO_MS_TIMEZONE_MAP = {
     'Pacific/Chatham': 'Chatham Islands Standard Time',
     'Pacific/Easter': 'Easter Island Standard Time',
     'Pacific/Efate': 'Central Pacific Standard Time',
-    'Pacific/Enderbury': 'Tonga Standard Time',
-    'Pacific/Fakaofo': 'Tonga Standard Time',
+    'Pacific/Enderbury': 'UTC+13',
+    'Pacific/Fakaofo': 'UTC+13',
     'Pacific/Fiji': 'Fiji Standard Time',
     'Pacific/Funafuti': 'UTC+12',
     'Pacific/Galapagos': 'Central America Standard Time',
@@ -481,5 +479,20 @@ PYTZ_TO_MS_TIMEZONE_MAP = {
     'Pacific/Truk': 'West Pacific Standard Time',
     'Pacific/Wake': 'UTC+12',
     'Pacific/Wallis': 'UTC+12',
-    'UTC': 'UTC',
 }
+
+# Add timezone names used by pytz (which gets timezone names from IANA) that are not found in the CLDR.
+# TODO: A full list of the IANA names missing in CLDR can be found with:
+#
+#    sorted(set(pytz.all_timezones) - set(CLDR_TO_MS_TIMEZONE_MAP))
+#
+PYTZ_TO_MS_TIMEZONE_MAP = dict(CLDR_TO_MS_TIMEZONE_MAP, **{
+    'Asia/Kolkata': 'India Standard Time',
+    'UTC': 'UTC',
+    'GMT': 'GMT Standard Time',
+})
+
+# Reverse map from Microsoft timezone ID to pytz timezone name. Non-CLDR timezone ID's can be added here.
+MS_TIMEZONE_TO_PYTZ_MAP = dict(dict((v, k) for k, v in PYTZ_TO_MS_TIMEZONE_MAP.items()), **{
+    'tzone://Microsoft/Utc': 'UTC',
+})

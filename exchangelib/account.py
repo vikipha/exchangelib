@@ -7,17 +7,28 @@ from logging import getLogger
 
 from cached_property import threaded_cached_property
 from future.utils import python_2_unicode_compatible
-from six import text_type, string_types
+from six import string_types
 
+from exchangelib.services import GetUserOofSettings, SetUserOofSettings
+from exchangelib.settings import OofSettings
 from .autodiscover import discover
 from .credentials import DELEGATE, IMPERSONATION
-from .errors import ErrorFolderNotFound, ErrorAccessDenied
-from .folders import Root, Calendar, DeletedItems, Drafts, Inbox, Outbox, SentItems, JunkEmail, Tasks, Contacts, \
-    RecoverableItemsRoot, RecoverableItemsDeletions, Folder, Item, BulkCreateResult, SHALLOW, DEEP, HARD_DELETE, \
-    AUTO_RESOLVE, SEND_TO_NONE, SAVE_ONLY, SEND_AND_SAVE_COPY, SEND_ONLY, SPECIFIED_OCCURRENCE_ONLY, \
+from .errors import ErrorAccessDenied, UnknownTimeZone
+from .ewsdatetime import EWSTimeZone, UTC
+from .fields import FieldPath
+from .folders import Folder, AdminAuditLogs, ArchiveDeletedItems, ArchiveInbox, ArchiveMsgFolderRoot, \
+    ArchiveRecoverableItemsDeletions, ArchiveRecoverableItemsPurges, ArchiveRecoverableItemsRoot, \
+    ArchiveRecoverableItemsVersions, ArchiveRoot, Calendar, Conflicts, Contacts, ConversationHistory, DeletedItems, \
+    Directory, Drafts, Favorites, IMContactList, Inbox, Journal, JunkEmail, LocalFailures, MsgFolderRoot, MyContacts, \
+    Notes, Outbox, PeopleConnect, PublicFoldersRoot, QuickContacts, RecipientCache, RecoverableItemsDeletions, \
+    RecoverableItemsPurges, RecoverableItemsRoot, RecoverableItemsVersions, Root, SearchFolders, SentItems, \
+    ServerFailures, SyncIssues, Tasks, ToDoSearch, VoiceMail
+from .items import Item, BulkCreateResult, HARD_DELETE, \
+    AUTO_RESOLVE, SEND_TO_NONE, SAVE_ONLY, SEND_AND_SAVE_COPY, SEND_ONLY, ALL_OCCURRENCIES, \
     DELETE_TYPE_CHOICES, MESSAGE_DISPOSITION_CHOICES, CONFLICT_RESOLUTION_CHOICES, AFFECTED_TASK_OCCURRENCES_CHOICES, \
     SEND_MEETING_INVITATIONS_CHOICES, SEND_MEETING_INVITATIONS_AND_CANCELLATIONS_CHOICES, \
-    SEND_MEETING_CANCELLATIONS_CHOICES
+    SEND_MEETING_CANCELLATIONS_CHOICES, IdOnly
+from .properties import Mailbox
 from .protocol import Protocol
 from .queryset import QuerySet
 from .services import ExportItems, UploadItems, GetItem, CreateItem, UpdateItem, DeleteItem, MoveItem, SendItem
@@ -28,12 +39,22 @@ log = getLogger(__name__)
 
 @python_2_unicode_compatible
 class Account(object):
+    """Models an Exchange server user account. The primary key for an account is its PrimarySMTPAddress
     """
-    Models an Exchange server user account. The primary key for an account is its PrimarySMTPAddress
-    """
-
     def __init__(self, primary_smtp_address, fullname=None, access_type=None, autodiscover=False, credentials=None,
-                 config=None, verify_ssl=True, locale=None):
+                 config=None, locale=None, default_timezone=None):
+        """
+        :param primary_smtp_address: The primary email address associated with the account on the Exchange server
+        :param fullname: The full name of the account. Optional.
+        :param access_type: The access type granted to 'credentials' for this account. Valid options are 'delegate'
+        (default) and 'impersonation'.
+        :param autodiscover: Whether to look up the EWS endpoint automatically using the autodiscover protocol.
+        :param credentials: A Credentials object containing valid credentials for this account.
+        :param config: A Configuration object containing EWS endpoint information. Required if autodiscover is disabled
+        :param locale: The locale of the user. Defaults to the locale of the host.
+        :param default_timezone: EWS may return some datetime values without timezone information. In this case, we will
+        assume values to be in the provided timezone. Defaults to the timezone of the host.
+        """
         if '@' not in primary_smtp_address:
             raise ValueError("primary_smtp_address '%s' is not an email address" % primary_smtp_address)
         self.primary_smtp_address = primary_smtp_address
@@ -51,111 +72,228 @@ class Account(object):
         if autodiscover:
             if not credentials:
                 raise AttributeError('autodiscover requires credentials')
-            self.primary_smtp_address, self.protocol = discover(email=self.primary_smtp_address,
-                                                                credentials=credentials, verify_ssl=verify_ssl)
             if config:
                 raise AttributeError('config is ignored when autodiscover is active')
+            self.primary_smtp_address, self.protocol = discover(email=self.primary_smtp_address,
+                                                                credentials=credentials)
         else:
             if not config:
                 raise AttributeError('non-autodiscover requires a config')
             self.protocol = config.protocol
+        try:
+            self.default_timezone = default_timezone or EWSTimeZone.localzone()
+        except (ValueError, UnknownTimeZone) as e:
+            # There is no translation from local timezone name to Windows timezone name, or e failed to find the
+            # local timezone.
+            log.warning(e.args[0] + '. Fallback to UTC')
+            self.default_timezone = UTC
+        assert isinstance(self.default_timezone, EWSTimeZone)
         # We may need to override the default server version on a per-account basis because Microsoft may report one
         # server version up-front but delegate account requests to an older backend server.
         self.version = self.protocol.version
-        self.root = Root.get_distinguished(account=self)
+        try:
+            self.root = Root.get_distinguished(account=self)
+        except ErrorAccessDenied:
+            # We may not have access to folder services. This will leave the account severely crippled, but at least
+            # survive the error.
+            log.warning('Access denied to root folder')
+            self.root = Root(account=self)
 
         assert isinstance(self.protocol, Protocol)
         log.debug('Added account: %s', self)
 
-    @threaded_cached_property
+    @property
     def folders(self):
-        # 'Top of Information Store' is a folder available in some Exchange accounts. It only contains folders
-        # owned by the account.
-        folders = self.root.get_folders(depth=SHALLOW)  # Start by searching top-level folders.
-        for folder in folders:
-            if folder.name == 'Top of Information Store':
-                folders = folder.get_folders(depth=SHALLOW)
-                break
-        else:
-            # We need to dig deeper. Get everything.
-            folders = self.root.get_folders(depth=DEEP)
-        mapped_folders = defaultdict(list)
-        for f in folders:
-            mapped_folders[f.__class__].append(f)
-        return mapped_folders
+        import warnings
+        warnings.warn('The Account.folders mapping is deprecated. Use Account.root.walk() instead')
+        folders_map = defaultdict(list)
+        for f in self.root.walk():
+            folders_map[f.__class__].append(f)
+        return folders_map
 
-    def _get_default_folder(self, fld_class):
-        try:
-            # Get the default folder
-            log.debug('Testing default %s folder with GetFolder', fld_class)
-            return fld_class.get_distinguished(account=self)
-        except ErrorAccessDenied:
-            # Maybe we just don't have GetFolder access? Try FindItems instead
-            log.debug('Testing default %s folder with FindItem', fld_class)
-            fld = fld_class(account=self)  # Creates a folder instance with default distinguished folder name
-            fld.test_access()
-            return fld
-        except ErrorFolderNotFound:
-            # There's no folder named fld_class.DISTINGUISHED_FOLDER_ID. Try to guess which folder is the default.
-            # Exchange makes this unnecessarily difficult.
-            log.debug('Searching default %s folder in full folder list', fld_class)
-            flds = self.folders[fld_class]
-            if not flds:
-                raise ErrorFolderNotFound('No useable default %s folders' % fld_class)
-            assert len(flds) == 1, 'Multiple possible default %s folders: %s' % (
-                fld_class, [text_type(f) for f in flds])
-            return flds[0]
+    @threaded_cached_property
+    def admin_audit_logs(self):
+        return self.root.get_default_folder(AdminAuditLogs)
+
+    @threaded_cached_property
+    def archive_deleted_items(self):
+        return self.root.get_default_folder(ArchiveDeletedItems)
+
+    @threaded_cached_property
+    def archive_inbox(self):
+        return self.root.get_default_folder(ArchiveInbox)
+
+    @threaded_cached_property
+    def archive_msg_folder_root(self):
+        return self.root.get_default_folder(ArchiveMsgFolderRoot)
+
+    @threaded_cached_property
+    def archive_recoverable_items_deletions(self):
+        return self.root.get_default_folder(ArchiveRecoverableItemsDeletions)
+
+    @threaded_cached_property
+    def archive_recoverable_items_purges(self):
+        return self.root.get_default_folder(ArchiveRecoverableItemsPurges)
+
+    @threaded_cached_property
+    def archive_recoverable_items_root(self):
+        return self.root.get_default_folder(ArchiveRecoverableItemsRoot)
+
+    @threaded_cached_property
+    def archive_recoverable_items_versions(self):
+        return self.root.get_default_folder(ArchiveRecoverableItemsVersions)
+
+    @threaded_cached_property
+    def archive_root(self):
+        return self.root.get_default_folder(ArchiveRoot)
 
     @threaded_cached_property
     def calendar(self):
         # If the account contains a shared calendar from a different user, that calendar will be in the folder list.
         # Attempt not to return one of those. An account may not always have a calendar called "Calendar", but a
         # Calendar folder with a localized name instead. Return that, if it's available.
-        return self._get_default_folder(Calendar)
+        return self.root.get_default_folder(Calendar)
 
     @threaded_cached_property
-    def trash(self):
-        return self._get_default_folder(DeletedItems)
-
-    @threaded_cached_property
-    def drafts(self):
-        return self._get_default_folder(Drafts)
-
-    @threaded_cached_property
-    def inbox(self):
-        return self._get_default_folder(Inbox)
-
-    @threaded_cached_property
-    def outbox(self):
-        return self._get_default_folder(Outbox)
-
-    @threaded_cached_property
-    def sent(self):
-        return self._get_default_folder(SentItems)
-
-    @threaded_cached_property
-    def junk(self):
-        return self._get_default_folder(JunkEmail)
-
-    @threaded_cached_property
-    def tasks(self):
-        return self._get_default_folder(Tasks)
+    def conflicts(self):
+        return self.root.get_default_folder(Conflicts)
 
     @threaded_cached_property
     def contacts(self):
-        return self._get_default_folder(Contacts)
+        return self.root.get_default_folder(Contacts)
+
+    @threaded_cached_property
+    def conversation_history(self):
+        return self.root.get_default_folder(ConversationHistory)
+
+    @threaded_cached_property
+    def directory(self):
+        return self.root.get_default_folder(Directory)
+
+    @threaded_cached_property
+    def drafts(self):
+        return self.root.get_default_folder(Drafts)
+
+    @threaded_cached_property
+    def favories(self):
+        return self.root.get_default_folder(Favorites)
+
+    @threaded_cached_property
+    def im_contact_list(self):
+        return self.root.get_default_folder(IMContactList)
+
+    @threaded_cached_property
+    def inbox(self):
+        return self.root.get_default_folder(Inbox)
+
+    @threaded_cached_property
+    def journal(self):
+        return self.root.get_default_folder(Journal)
+
+    @threaded_cached_property
+    def junk(self):
+        return self.root.get_default_folder(JunkEmail)
+
+    @threaded_cached_property
+    def local_failures(self):
+        return self.root.get_default_folder(LocalFailures)
+
+    @threaded_cached_property
+    def msg_folder_root(self):
+        return self.root.get_default_folder(MsgFolderRoot)
+
+    @threaded_cached_property
+    def my_contacts(self):
+        return self.root.get_default_folder(MyContacts)
+
+    @threaded_cached_property
+    def notes(self):
+        return self.root.get_default_folder(Notes)
+
+    @threaded_cached_property
+    def outbox(self):
+        return self.root.get_default_folder(Outbox)
+
+    @threaded_cached_property
+    def people_connect(self):
+        return self.root.get_default_folder(PeopleConnect)
+
+    @threaded_cached_property
+    def public_folders_root(self):
+        return self.root.get_default_folder(PublicFoldersRoot)
+
+    @threaded_cached_property
+    def quick_contacts(self):
+        return self.root.get_default_folder(QuickContacts)
+
+    @threaded_cached_property
+    def recipient_cache(self):
+        return self.root.get_default_folder(RecipientCache)
+
+    @threaded_cached_property
+    def recoverable_items_deletions(self):
+        return self.root.get_default_folder(RecoverableItemsDeletions)
+
+    @threaded_cached_property
+    def recoverable_items_purges(self):
+        return self.root.get_default_folder(RecoverableItemsPurges)
 
     @threaded_cached_property
     def recoverable_items_root(self):
-        return self._get_default_folder(RecoverableItemsRoot)
+        return self.root.get_default_folder(RecoverableItemsRoot)
 
     @threaded_cached_property
-    def recoverable_deleted_items(self):
-        return self._get_default_folder(RecoverableItemsDeletions)
+    def recoverable_items_versions(self):
+        return self.root.get_default_folder(RecoverableItemsVersions)
+
+    @threaded_cached_property
+    def search_folders(self):
+        return self.root.get_default_folder(SearchFolders)
+
+    @threaded_cached_property
+    def sent(self):
+        return self.root.get_default_folder(SentItems)
+
+    @threaded_cached_property
+    def server_failures(self):
+        return self.root.get_default_folder(ServerFailures)
+
+    @threaded_cached_property
+    def sync_issues(self):
+        return self.root.get_default_folder(SyncIssues)
+
+    @threaded_cached_property
+    def tasks(self):
+        return self.root.get_default_folder(Tasks)
+
+    @threaded_cached_property
+    def todo_search(self):
+        return self.root.get_default_folder(ToDoSearch)
+
+    @threaded_cached_property
+    def trash(self):
+        return self.root.get_default_folder(DeletedItems)
+
+    @threaded_cached_property
+    def voice_mail(self):
+        return self.root.get_default_folder(VoiceMail)
 
     @property
     def domain(self):
         return get_domain(self.primary_smtp_address)
+
+    @property
+    def oof_settings(self):
+        # We don't want to cache this property because then we can't easily get updates. 'threaded_cached_property'
+        # supports the 'del self.oof_settings' syntax to invalidate the cache, but does not support custom setter
+        # methods. Having a non-cached service call here goes against the assumption that properties are cheap, but the
+        # alternative is to create get_oof_settings() and set_oof_settings(), and that's just too Java-ish for my taste.
+        return GetUserOofSettings(self).call(mailbox=Mailbox(email_address=self.primary_smtp_address))
+
+    @oof_settings.setter
+    def oof_settings(self, value):
+        assert isinstance(value, OofSettings)
+        SetUserOofSettings(self).call(mailbox=Mailbox(email_address=self.primary_smtp_address), oof_settings=value)
 
     def export(self, items):
         """
@@ -240,7 +378,7 @@ class Account(object):
             return []
         return list(
             i if isinstance(i, Exception)
-            else BulkCreateResult.from_xml(elem=i, account=self, folder=folder)
+            else BulkCreateResult.from_xml(elem=i, account=self)
             for i in CreateItem(account=self).call(
                 items=items,
                 folder=folder,
@@ -252,20 +390,17 @@ class Account(object):
     def bulk_update(self, items, conflict_resolution=AUTO_RESOLVE, message_disposition=SAVE_ONLY,
                     send_meeting_invitations_or_cancellations=SEND_TO_NONE, suppress_read_receipts=True):
         """
-        Updates items in the folder
+        Bulk updates existing items
 
-        :param items: a dict containing:
-
-            Key: An Item object (calendar item, message, task or contact)
-            Value: a list of attributes that have changed on this object
-
+        :param items: a list of (Item, fieldnames) tuples, where 'Item' is an Item object, and 'fieldnames' is a list
+                      containing the attributes on this Item object that we want to be updated.
         :param conflict_resolution: Possible values are specified in CONFLICT_RESOLUTION_CHOICES
         :param message_disposition: only applicable to Message items. Possible values are specified in
                MESSAGE_DISPOSITION_CHOICES
         :param send_meeting_invitations_or_cancellations: only applicable to CalendarItem items. Possible values are
                specified in SEND_MEETING_INVITATIONS_AND_CANCELLATIONS_CHOICES
         :param suppress_read_receipts: nly supported from Exchange 2013. True or False
-        :return: a list of either ItemId or exception instances in the same order as the input.
+        :return: a list of either (item_id, changekey) tuples or exception instances in the same order as the input.
         """
         assert conflict_resolution in CONFLICT_RESOLUTION_CHOICES
         assert message_disposition in MESSAGE_DISPOSITION_CHOICES
@@ -274,9 +409,10 @@ class Account(object):
         if message_disposition == SEND_ONLY:
             raise ValueError('Cannot send-only existing objects. Use SendItem service instead')
         # bulk_update() on a queryset does not make sense because there would be no opportunity to alter the items. In
-        # fact, it could be dangerous if the queryset is contains an '.only()'. This would wipe out certain fields
+        # fact, it could be dangerous if the queryset contains an '.only()'. This would wipe out certain fields
         # entirely.
-        assert not isinstance(items, QuerySet)
+        if isinstance(items, QuerySet):
+            raise ValueError('Cannot bulk update on a queryset')
         log.debug(
             'Updating items for %s (conflict_resolution %s, message_disposition: %s, send_meeting_invitations: %s)',
             self,
@@ -301,7 +437,7 @@ class Account(object):
         )
 
     def bulk_delete(self, ids, delete_type=HARD_DELETE, send_meeting_cancellations=SEND_TO_NONE,
-                    affected_task_occurrences=SPECIFIED_OCCURRENCE_ONLY, suppress_read_receipts=True):
+                    affected_task_occurrences=ALL_OCCURRENCIES, suppress_read_receipts=True):
         """
         Bulk deletes items.
 
@@ -359,8 +495,7 @@ class Account(object):
             # We accept generators, so it's not always convenient for caller to know up-front if 'ids' is empty. Allow
             # empty 'ids' and return early.
             return []
-        return list(SendItem(account=self).call(items=ids, save_item_to_folder=save_copy,
-                                                saved_item_folder=copy_to_folder))
+        return list(SendItem(account=self).call(items=ids, saved_item_folder=copy_to_folder))
 
     def bulk_move(self, ids, to_folder):
         # Move items to another folder. Returns new IDs for the items that were moved
@@ -382,8 +517,8 @@ class Account(object):
 
     def fetch(self, ids, folder=None, only_fields=None):
         # 'folder' is used for validating only_fields
-        # 'only_fields' specifies which fields to fetch, instead of all possible fields.
-        validation_folder = folder or Folder  # Default to a folder type that supports all item types
+        # 'only_fields' specifies which fields to fetch, instead of all possible fields, as strings or FieldPaths.
+        validation_folder = folder or Folder(account=self)  # Default to a folder type that supports all item types
         # 'ids' could be an unevaluated QuerySet, e.g. if we ended up here via `fetch(ids=some_folder.filter(...))`. In
         # that case, we want to use its iterator. Otherwise, peek() will start a count() which is wasteful because we
         # need the item IDs immediately afterwards. iterator() will only do the bare minimum.
@@ -394,17 +529,19 @@ class Account(object):
             # We accept generators, so it's not always convenient for caller to know up-front if 'ids' is empty. Allow
             # empty 'ids' and return early.
             return
-        if only_fields:
-            allowed_fields = validation_folder.allowed_fields()
-            for f in only_fields:
-                assert f in allowed_fields
+        if only_fields is None:
+            # We didn't restrict list of field paths. Get all fields from the server, including extended properties.
+            additional_fields = {FieldPath(field=f) for f in validation_folder.allowed_fields()}
         else:
-            only_fields = {f for f in validation_folder.allowed_fields() if f.name not in ('item_id', 'changekey')}
-        for i in GetItem(account=self).call(items=ids, additional_fields=only_fields):
+            additional_fields = validation_folder.validate_fields(fields=only_fields)
+        # Always use IdOnly here, because AllProperties doesn't actually get *all* properties
+        for i in GetItem(account=self).call(items=ids, additional_fields=additional_fields, shape=IdOnly):
             if isinstance(i, Exception):
                 yield i
             else:
-                yield validation_folder.item_model_from_tag(i.tag).from_xml(elem=i, account=self, folder=folder)
+                item = validation_folder.item_model_from_tag(i.tag).from_xml(elem=i, account=self)
+                item.folder = folder
+                yield item
 
     def __str__(self):
         txt = '%s' % self.primary_smtp_address

@@ -4,6 +4,102 @@ Change Log
 
 HEAD
 ----
+
+
+1.10.7
+------
+* Added support for registering extended properties on folders.
+* Added support for creating, updating, deleting and emptying folders.
+
+
+1.10.6
+------
+* Added support for getting and setting ``Account.oof_settings`` using the new ``OofSettings`` class.
+* Added snake_case named shortcuts to all distinguished folders on the ``Account`` model. E.g.
+  ``Account.search_folders``.
+
+
+1.10.5
+------
+* Bugfix release
+
+
+1.10.4
+------
+* Added support for most item fields. The remaining ones are mentioned in issue #203.
+
+
+1.10.3
+------
+* Added an ``exchangelib.util.PrettyXmlHandler`` log handler which will pretty-print and highlight XML requests
+  and responses.
+
+1.10.2
+------
+* Greatly improved folder navigation. See the 'Folders' section in the README
+* Added deprecation warnings for ``Account.folders`` and ``Folder.get_folder_by_name()``
+
+
+1.10.1
+------
+* Bugfix release
+
+
+1.10.0
+------
+* Removed the ``verify_ssl`` argument to ``Account``, ``discover`` and ``Configuration``. If you need to disable SSL
+  verification, register a custom ``HTTPAdapter`` class. A sample adapter class is provided for convenience:
+
+  .. code-block:: python
+
+      from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
+      BaseProcotol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
+
+
+1.9.6
+-----
+* Support new Office365 build numbers
+
+1.9.5
+-----
+* Added support for the ``effective_rights``field on items and folders.
+* Added support for custom ``requests`` transport adapters, to allow proxy support, custom TLS validation etc.
+* Default value for the ``affected_task_occurrences`` argument to ``Item.move_to_trash()``, ``Item.soft_delete()``
+  and ``Item.delete()`` was changed to ``'AllOccurrences'`` as a less surprising default when working with simple
+  tasks.
+* Added ``Task.complete()`` helper method to mark tasks as complete.
+
+1.9.4
+-----
+* Added minimal support for the ``PostItem`` item type
+* Added support for the ``DistributionList`` item type
+* Added support for receiving naive datetimes from the server. They will be localized using the new ``default_timezone``
+  attribute on ``Account``
+* Added experimental support for recurring calendar items. See examples in issue #37.
+
+1.9.3
+-----
+* Improved support for ``filter()``, ``.only()``, ``.order_by()`` etc. on indexed properties. It is now possible to
+  specify labels and subfields, e.g. ``.filter(phone_numbers=PhoneNumber(label='CarPhone', phone_number='123'))``
+  ``.filter(phone_numbers__CarPhone='123')``, ``.filter(physical_addresses__Home__street='Elm St. 123')``,
+  `.only('physical_addresses__Home__street')`` etc.
+* Improved performance of ``.order_by()`` when sorting on multiple fields.
+* Implemented QueryString search. You can now filter using an EWS QueryString, e.g. ``filter('subject:XXX')``
+
+1.9.2
+-----
+* Added ``EWSTimeZone.localzone()`` to get the local timezone
+* Support ``some_folder.get(item_id=..., changekey=...)`` as a shortcut to get a single item when you know the ID and
+  changekey.
+* Support attachments on Exchange 2007
+
+1.9.1
+-----
+* Fixed XML generation for Exchange 2010 and other picky server versions
+* Fixed timezone localization for ``EWSTimeZone`` created from a static timezone
+
+1.9.0
+-----
 * Expand support for ``ExtendedProperty`` to include all possible attributes. This required renaming the ``property_id``
   attribute to ``property_set_id``.
 * When using the ``Credentials`` class, ``UnauthorizedError`` is now raised if the credentials are wrong.
@@ -25,6 +121,17 @@ HEAD
   you need fault-tolerane and used ``Credentials(..., is_service_account=True)`` before, use ``ServiceAccount`` now. This
   also disables fault-tolerance for the ``Credentials`` class, which is in line with what most users expected.
 * Added an optional ``update_fields`` attribute to ``save()`` to specify only some  fields to be updated.
+* Code in in ``folders.py`` has been split into multiple files, and some classes will have new import locaions. The most
+  commonly used classes have a shortcut in __init__.py
+* Added support for the ``exists`` lookup in filters, e.g. ``my_folder.filter(categories__exists=True|False)`` to filter
+  on the existence of that field on items in the folder.
+* When filtering, ``foo__in=value`` now requires the value to be a list, and ``foo__contains`` requires the value to be
+  a list if the field itself is a list, e.g. ``categories__contains=['a', 'b']``.
+* Added support for fields and enum entries that are only supported in some EWS versions
+* Added a new field ``Item.text_body`` which is a read-only version of HTML body content, where HTML tags are stripped
+  by the server. Only supported from Exchange 2013 and up.
+* Added a new choice ``WorkingElsewhere`` to the ``CalendarItem.legacy_free_busy_status`` enum. Only supported from
+  Exchange 2013 and up.
 
 
 1.8.1

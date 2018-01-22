@@ -22,7 +22,7 @@ You can keep the notifier running by adding this to your shell startup script:
 
 Where `~/office365-notifier/notify.sh` contains this:
 
-cd  ~/office365-notifier
+cd "$( dirname "$0" )"
 if [ ! -d "office365_env" ]; then
     virtualenv -p python3 office365_env
 fi
@@ -42,10 +42,10 @@ from netrc import netrc
 import sys
 import warnings
 
-from exchangelib import DELEGATE, Configuration, Credentials, Account
-from exchangelib.ewsdatetime import UTC_NOW, EWSTimeZone
-import sh
+from exchangelib import DELEGATE, Credentials, Account, EWSTimeZone, UTC_NOW
+
 from bs4 import BeautifulSoup
+import sh
 
 # Disable insecure SSL warnings
 warnings.filterwarnings("ignore")
@@ -55,18 +55,7 @@ notify = sh.Command('/usr/bin/notify-send')
 zenity = sh.Command('/usr/bin/zenity')
 
 # Get the local timezone
-timedatectl = sh.Command('/usr/bin/timedatectl')
-for l in timedatectl():
-    # timedatectl output differs on varying distros
-    if 'Timezone' in l.strip():
-        tz_name = l.split()[1]
-        break
-    if 'Time zone' in l.strip():
-        tz_name = l.split()[2]
-        break
-else:
-    raise ValueError('Timezone not found')
-tz = EWSTimeZone.timezone(tz_name)
+tz = EWSTimeZone.localzone()
 
 sleep = int(sys.argv[1])  # 1st arg to this script is the number of seconds to look back in the inbox
 now = UTC_NOW()
@@ -74,7 +63,7 @@ emails_since = now - timedelta(seconds=sleep)
 cal_items_before = now + timedelta(seconds=sleep * 4)  # Longer notice of upcoming appointments than new emails
 username, _, password = netrc().authenticators('office365')
 c = Credentials(username, password)
-a = Account(primary_smtp_address=c.username, credentials=c, access_type=DELEGATE, autodiscover=True, verify_ssl=False)
+a = Account(primary_smtp_address=c.username, credentials=c, access_type=DELEGATE, autodiscover=True)
 
 for msg in a.calendar.view(start=now, end=cal_items_before)\
         .only('start', 'end', 'subject', 'location')\

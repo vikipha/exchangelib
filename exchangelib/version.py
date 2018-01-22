@@ -8,7 +8,8 @@ import requests.sessions
 from future.utils import python_2_unicode_compatible
 from six import text_type
 
-from .errors import TransportError, EWSWarning, ErrorInvalidSchemaVersionForMailboxVersion
+from .errors import TransportError, ErrorInvalidSchemaVersionForMailboxVersion, ErrorInvalidServerVersion, \
+    ResponseMessageError
 from .transport import TNS, SOAPNS, get_auth_instance
 from .util import is_xml, to_xml
 
@@ -67,6 +68,7 @@ class Build(object):
         15: {
             0: 'Exchange2013',  # Minor builds starting from 847 are Exchange2013_SP1, see api_version()
             1: 'Exchange2016',
+            20: 'Exchange2016',  # This is Office365. See issue #221
         },
     }
 
@@ -94,13 +96,15 @@ class Build(object):
             if v is None:
                 raise ValueError()
             kwargs[k] = int(v)  # Also raises ValueError
-        elem.clear()
         return cls(**kwargs)
 
     def api_version(self):
         if self.major_version == 15 and self.minor_version == 0 and self.major_build >= 847:
             return 'Exchange2013_SP1'
-        return self.API_VERSION_MAP[self.major_version][self.minor_version]
+        try:
+            return self.API_VERSION_MAP[self.major_version][self.minor_version]
+        except KeyError:
+            raise ValueError('API version for build %s is unknown' % self)
 
     def __cmp__(self, other):
         # __cmp__ is not a magic method in Python3. We'll just use it here to implement comparison operators
@@ -117,6 +121,9 @@ class Build(object):
 
     def __eq__(self, other):
         return self.__cmp__(other) == 0
+
+    def __hash__(self):
+        return hash(repr(self))
 
     def __ne__(self, other):
         return self.__cmp__(other) != 0
@@ -144,7 +151,9 @@ class Build(object):
 # Helpers for comparison operations elsewhere in this package
 EXCHANGE_2007 = Build(8, 0)
 EXCHANGE_2010 = Build(14, 0)
+EXCHANGE_2010_SP2 = Build(14, 2)
 EXCHANGE_2013 = Build(15, 0)
+EXCHANGE_2016 = Build(15, 1)
 
 
 @python_2_unicode_compatible
@@ -152,6 +161,7 @@ class Version(object):
     """
     Holds information about the server version
     """
+    __slots__ = ('build', 'api_version')
 
     def __init__(self, build, api_version=None):
         self.build = build
@@ -183,8 +193,7 @@ class Version(object):
         # We can't use a session object from the protocol pool for docs because sessions are created with service auth.
         auth = get_auth_instance(credentials=protocol.credentials, auth_type=protocol.docs_auth_type)
         try:
-            shortname = cls._get_shortname_from_docs(auth=auth, types_url=protocol.types_url,
-                                                     verify_ssl=protocol.verify_ssl)
+            shortname = cls._get_shortname_from_docs(auth=auth, types_url=protocol.types_url)
             log.debug('Shortname according to %s: %s', protocol.types_url, shortname)
         except (TransportError, ParseError) as e:
             log.info(text_type(e))
@@ -193,13 +202,16 @@ class Version(object):
         return cls._guess_version_from_service(protocol=protocol, hint=api_version)
 
     @staticmethod
-    def _get_shortname_from_docs(auth, types_url, verify_ssl):
+    def _get_shortname_from_docs(auth, types_url):
         # Get the server version from types.xsd. We can't necessarily use the service auth type since it may not be the
         # same as the auth type for docs.
         log.debug('Getting %s with auth type %s', types_url, auth.__class__.__name__)
         # Some servers send an empty response if we send 'Connection': 'close' header
+        from .protocol import BaseProtocol
         with requests.sessions.Session() as s:
-            r = s.get(url=types_url, auth=auth, allow_redirects=False, stream=False, verify=verify_ssl)
+            s.mount('http://', adapter=BaseProtocol.get_adapter())
+            s.mount('https://', adapter=BaseProtocol.get_adapter())
+            r = s.get(url=types_url, auth=auth, allow_redirects=False, stream=False)
         log.debug('Request headers: %s', r.request.headers)
         log.debug('Response code: %s', r.status_code)
         log.debug('Response headers: %s', r.headers)
@@ -210,7 +222,7 @@ class Version(object):
                 types_url,
                 '\n\n%s[...]' % r.text[:200] if len(r.text) > 200 else '\n\n%s' % r.text if r.text else '',
             ))
-        return to_xml(r.text, encoding=r.encoding).get('version')
+        return to_xml(r.text).get('version')
 
     @classmethod
     def _guess_version_from_service(cls, protocol, hint=None):
@@ -220,34 +232,41 @@ class Version(object):
         from .services import ResolveNames
         protocol.version = Version(build=None, api_version=hint or API_VERSIONS[-1])
         try:
-            ResolveNames(protocol=protocol).call(unresolved_entries=[protocol.credentials.username])
-            return protocol.version
-        except ErrorInvalidSchemaVersionForMailboxVersion:
+            list(ResolveNames(protocol=protocol).call(unresolved_entries=[protocol.credentials.username]))
+        except (ErrorInvalidSchemaVersionForMailboxVersion, ErrorInvalidServerVersion):
             raise TransportError('Unable to guess version')
+        except ResponseMessageError:
+            # We survived long enough to get a new version
+            pass
+        return protocol.version
+
+    @staticmethod
+    def _is_invalid_version_string(s):
+        # Check if a version string is bogus
+        return s.startswith('V2_') or s[:6] in ('V2015_', 'V2016_', 'V2017_')
 
     @classmethod
     def from_response(cls, requested_api_version, response):
         try:
-            header = to_xml(response.text, encoding=response.encoding).find('{%s}Header' % SOAPNS)
+            header = to_xml(response).find('{%s}Header' % SOAPNS)
             if header is None:
                 raise ParseError()
         except ParseError:
-            raise EWSWarning('Unknown XML response from %s (response: %s)' % (response, response.text))
+            raise TransportError('Unknown XML response (%s)' % response)
 
         info = header.find('{%s}ServerVersionInfo' % TNS)
         if info is None:
-            raise TransportError('No ServerVersionInfo in response: %s' % response.text)
+            raise TransportError('No ServerVersionInfo in response: %s' % response)
         try:
-            build = Build.from_xml(info)
+            build = Build.from_xml(elem=info)
         except ValueError:
-            raise TransportError('Bad ServerVersionInfo in response: %s' % response.text)
+            raise TransportError('Bad ServerVersionInfo in response: %s' % response)
         # Not all Exchange servers send the Version element
         api_version_from_server = info.get('Version') or build.api_version()
         if api_version_from_server != requested_api_version:
-            if api_version_from_server.startswith('V2_') \
-                    or api_version_from_server.startswith('V2015_') \
-                    or api_version_from_server.startswith('V2016_'):
-                # Office 365 is an expert in sending invalid API version strings...
+            if cls._is_invalid_version_string(api_version_from_server):
+                # For unknown reasons, Office 365 may respond with an API version strings that is invalid in a request.
+                # Detect these so we can fallback to a valid version string.
                 log.info('API version "%s" worked but server reports version "%s". Using "%s"', requested_api_version,
                          api_version_from_server, requested_api_version)
                 api_version_from_server = requested_api_version
